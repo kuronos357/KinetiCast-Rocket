@@ -1,14 +1,15 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <WiFiUDP.h>
+#include "seacret.h"
 
 // Wi-Fi設定
-const char* SSID = "your_ssid";
-const char* PASS = "your_pass";
+const char* SSID = WIFI_SSID;
+const char* PASS = WIFI_PASS;
 
 // UDP設定
-const char* PC_IP = "192.168.x.x";
-const uint16_t UDP_PORT = 9870;
+const char* PC_IP = PC_IP;
+const uint16_t UDP_PORT = PC_PORT;
 
 WiFiUDP udp;
 
