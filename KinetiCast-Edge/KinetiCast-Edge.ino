@@ -1,4 +1,5 @@
 #include <M5Unified.h>
+#include <SPI.h>
 #include <WiFi.h>
 #include <WiFiUDP.h>
 #include "secrets.h"
