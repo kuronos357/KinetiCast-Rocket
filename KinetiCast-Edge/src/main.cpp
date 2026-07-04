@@ -331,7 +331,7 @@ void setup() {
 
   udp.begin(UDP_PORT);
 
-  //xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 2, NULL, 1);
 
 #if ENABLE_CAMERA
   xTaskCreatePinnedToCore(cameraTask, "camera", 8192, NULL, 1, NULL, 0);
