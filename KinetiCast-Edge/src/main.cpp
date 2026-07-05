@@ -186,7 +186,7 @@ bool initCamera() {
   config.fb_count = 2;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
-  config.sccb_i2c_port = 0; 
+  config.sccb_i2c_port = 1; 
 
   esp_err_t err = esp_camera_init(&config);
   camErrCode = err;
@@ -309,7 +309,8 @@ void setup() {
   Serial.println("GPIO18 set LOW (camera power enable).");
 #endif
 
-  M5.begin();
+
+
   bool imuInitOk = M5.Imu.init();
   Serial.print("M5.Imu.init() result: ");
   Serial.println(imuInitOk ? "OK" : "FAILED");
@@ -331,7 +332,7 @@ void setup() {
 
   udp.begin(UDP_PORT);
 
-  xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 2, NULL, 1);
+//  xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 2, NULL, 1);
 
 #if ENABLE_CAMERA
   xTaskCreatePinnedToCore(cameraTask, "camera", 8192, NULL, 1, NULL, 0);
