@@ -197,17 +197,21 @@ bool initCamera() {
 }
 
 void cameraTask(void* arg) {
-  const uint32_t CAPTURE_INTERVAL_MS = 1000;
+  const uint32_t CAPTURE_INTERVAL_MS = 2000; // 通常時は2秒に1枚
   uint32_t lastCaptureAt = 0;
   int fileIdx = 0;
 
   while (true) {
     bool apogeeJustDetected = updateFlightState();
+
     uint32_t now = millis();
     bool shouldCaptureRegular = camOk && (now - lastCaptureAt >= CAPTURE_INTERVAL_MS);
 
     if (shouldCaptureRegular || apogeeJustDetected) {
+      uint32_t t0 = millis();
       camera_fb_t* fb = esp_camera_fb_get();
+      uint32_t t1 = millis();
+
       if (fb) {
         char filename[40];
         if (apogeeJustDetected) {
@@ -226,13 +230,22 @@ void cameraTask(void* arg) {
           Serial.print("Failed to save: ");
           Serial.println(filename);
         }
+
+        uint32_t t2 = millis();
+        Serial.printf("[CAMERA] capture=%lums write=%lums size=%uKB total=%lums%s\n",
+                      t1 - t0, t2 - t1, fb->len / 1024, t2 - t0,
+                      apogeeJustDetected ? " [APOGEE]" : "");
+
         esp_camera_fb_return(fb);
         lastCaptureAt = now;
       }
     }
+
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
+
+
 #endif // ENABLE_CAMERA
 
 bool initSDCard() {
