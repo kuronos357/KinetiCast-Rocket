@@ -1,25 +1,20 @@
-#include <Wire.h>
+#include <M5Unified.h> 
 #include <WiFi.h>
 #include <WiFiUDP.h>
 #include <SPI.h>
 #include <SD.h>
 #include "esp_camera.h"
-#include "SparkFun_BMI270_Arduino_Library.h"
 #include "secrets.h"
 
 #define ENABLE_CAMERA 1
 
-// ---- IMU (BMI270) I2Cピン（AtomS3R系、M5Stack公式ドキュメント準拠）----
-#define IMU_SDA_PIN 45
-#define IMU_SCL_PIN 0
-
-// ---- SDカードSPIピン（Atomic TFCard Base / AtomS3R）----
+// ---- SDカード SPIピン配置 ----
 #define SD_SPI_SCK_PIN  7
 #define SD_SPI_MISO_PIN 8
 #define SD_SPI_MOSI_PIN 6
 #define SD_SPI_CS_PIN   5
 
-// ---- カメラピン（AtomS3R-M12 / OV3660）----
+// ---- OV3660 カメラピン配置 ----
 #define CAM_PIN_PWDN    -1
 #define CAM_PIN_RESET   -1
 #define CAM_PIN_XCLK    21
@@ -30,6 +25,7 @@
 #define CAM_PIN_D5      17
 #define CAM_PIN_D4      4
 #define CAM_PIN_D3      48
+#define CAM_PIN_D46     46 
 #define CAM_PIN_D2      46
 #define CAM_PIN_D1      42
 #define CAM_PIN_D0      3
@@ -42,13 +38,14 @@ const uint16_t UDP_PORT = 9870;
 
 WiFiUDP udp;
 File imuLogFile;
-BMI270 imu;
 
+// ---- 9軸対応 パケットデータ構造体 (計40バイト) ----
 #pragma pack(push, 1)
 struct ImuPacket {
   uint32_t timestamp_ms;
-  float ax, ay, az;
-  float gx, gy, gz;
+  float ax, ay, az; 
+  float gx, gy, gz; 
+  float mx, my, mz; 
 };
 #pragma pack(pop)
 
@@ -76,40 +73,56 @@ const uint32_t MIN_COAST_TIME_MS = 500;
 uint32_t stateEnteredAt = 0;
 uint32_t apogeeCandidateSince = 0;
 
-// ---------------------------------------------------------
-// Core1: IMUサンプリング（100Hz）+ UDP送信 + SD保存 + 共有変数更新
-// ---------------------------------------------------------
+// =========================================================================
+// [Task 1] 9軸IMU・地磁気サンプリング＆通信タスク (Core 1 / 100Hz)
+// =========================================================================
 void imuTask(void* arg) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(10); // 100Hz
-  char lineBuf[128];
+  const TickType_t xFrequency = pdMS_TO_TICKS(10); 
+  char lineBuf[180]; 
 
   while (true) {
+    M5.update(); 
+
     ImuPacket pkt;
     pkt.timestamp_ms = millis();
 
-    imu.getSensorData();
-    pkt.ax = imu.data.accelX;
-    pkt.ay = imu.data.accelY;
-    pkt.az = imu.data.accelZ;
-    pkt.gx = imu.data.gyroX;
-    pkt.gy = imu.data.gyroY;
-    pkt.gz = imu.data.gyroZ;
-    imuOk = true; // getSensorData()に戻り値が無いため、通信自体の成否はcheckコマンドで別途確認
+    if (M5.Imu.update()) {
+      auto imu_data = M5.Imu.getImuData();
+      
+      pkt.ax = imu_data.accel.x;
+      pkt.ay = imu_data.accel.y;
+      pkt.az = imu_data.accel.z;
+      
+      pkt.gx = imu_data.gyro.x;
+      pkt.gy = imu_data.gyro.y;
+      pkt.gz = imu_data.gyro.z;
+      
+      pkt.mx = imu_data.mag.x;
+      pkt.my = imu_data.mag.y;
+      pkt.mz = imu_data.mag.z;
+      
+      imuOk = true;
+    } else {
+      imuOk = M5.Imu.isEnabled();
+    }
 
     sharedAx = pkt.ax;
     sharedAy = pkt.ay;
     sharedAz = pkt.az;
 
-    udp.beginPacket(PC_IP, UDP_PORT);
-    udp.write((uint8_t*)&pkt, sizeof(pkt));
-    udp.endPacket();
-    packetsSent++;
+    // 【セーフティガード】WiFiが接続中かつIPが取れている場合のみUDPを送信（エラー12対策）
+    if (WiFi.status() == WL_CONNECTED) {
+      udp.beginPacket(PC_IP, UDP_PORT);
+      udp.write((uint8_t*)&pkt, sizeof(pkt));
+      udp.endPacket();
+      packetsSent++;
+    }
 
-    if (sdOk) {
+    if (sdOk && imuOk) {
       int len = snprintf(lineBuf, sizeof(lineBuf),
-        "%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
-        pkt.timestamp_ms, pkt.ax, pkt.ay, pkt.az, pkt.gx, pkt.gy, pkt.gz);
+        "%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+        pkt.timestamp_ms, pkt.ax, pkt.ay, pkt.az, pkt.gx, pkt.gy, pkt.gz, pkt.mx, pkt.my, pkt.mz);
       imuLogFile.write((uint8_t*)lineBuf, len);
     }
 
@@ -117,6 +130,9 @@ void imuTask(void* arg) {
   }
 }
 
+// =========================================================================
+// [Task 2] カメラ制御・飛行状態判定タスク (Core 0)
+// =========================================================================
 #if ENABLE_CAMERA
 bool updateFlightState() {
   float ax = sharedAx, ay = sharedAy, az = sharedAz;
@@ -145,7 +161,7 @@ bool updateFlightState() {
         } else if (now - apogeeCandidateSince > APOGEE_SUSTAIN_MS) {
           flightState = APOGEE_DETECTED;
           Serial.println("[FLIGHT] Apogee confirmed -> APOGEE_DETECTED");
-          return true;
+          return true; 
         }
       } else {
         apogeeCandidateSince = 0;
@@ -179,15 +195,23 @@ bool initCamera() {
   config.pin_reset = CAM_PIN_RESET;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_UXGA;
+  config.frame_size = FRAMESIZE_UXGA; 
   config.jpeg_quality = 10;
   config.fb_count = 2;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.sccb_i2c_port = 0;
 
+  // ⭐️【最重要ガード】M5UnifiedからI2Cバスの管理権を一時的にはく奪する
+  M5.In_I2C.release();
+  delay(10);
+
   esp_err_t err = esp_camera_init(&config);
   camErrCode = err;
+
+  // ⭐️【管理権の返還】カメラ初期化が終わったら、IMU通信のためにM5UnifiedへI2Cを戻す
+  M5.In_I2C.begin();
+
   if (err != ESP_OK) {
     Serial.printf("Camera init failed: 0x%x\n", err);
     return false;
@@ -197,26 +221,21 @@ bool initCamera() {
 }
 
 void cameraTask(void* arg) {
-  const uint32_t CAPTURE_INTERVAL_MS = 2000; // 通常時は2秒に1枚
+  const uint32_t CAPTURE_INTERVAL_MS = 2000;
   uint32_t lastCaptureAt = 0;
   int fileIdx = 0;
 
   while (true) {
     bool apogeeJustDetected = updateFlightState();
-
     uint32_t now = millis();
     bool shouldCaptureRegular = camOk && (now - lastCaptureAt >= CAPTURE_INTERVAL_MS);
 
     if (shouldCaptureRegular || apogeeJustDetected) {
-      uint32_t t0 = millis();
       camera_fb_t* fb = esp_camera_fb_get();
-      uint32_t t1 = millis();
-
       if (fb) {
         char filename[40];
         if (apogeeJustDetected) {
           snprintf(filename, sizeof(filename), "/apogee_%lu.jpg", now);
-          Serial.print("[CAMERA] Apogee snapshot saved: ");
         } else {
           snprintf(filename, sizeof(filename), "/cam_%04d.jpg", fileIdx++);
         }
@@ -225,35 +244,19 @@ void cameraTask(void* arg) {
         if (imgFile) {
           imgFile.write(fb->buf, fb->len);
           imgFile.close();
-          if (apogeeJustDetected) Serial.println(filename);
-        } else {
-          Serial.print("Failed to save: ");
-          Serial.println(filename);
         }
-
-        uint32_t t2 = millis();
-        Serial.printf("[CAMERA] capture=%lums write=%lums size=%uKB total=%lums%s\n",
-                      t1 - t0, t2 - t1, fb->len / 1024, t2 - t0,
-                      apogeeJustDetected ? " [APOGEE]" : "");
-
         esp_camera_fb_return(fb);
         lastCaptureAt = now;
       }
     }
-
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
-
-
-#endif // ENABLE_CAMERA
+#endif
 
 bool initSDCard() {
   SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
-  if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) {
-    Serial.println("SD Init failed!");
-    return false;
-  }
+  if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) return false;
 
   char filename[32];
   int idx = 0;
@@ -265,43 +268,58 @@ bool initSDCard() {
   imuLogFile = SD.open(filename, FILE_WRITE);
   if (!imuLogFile) return false;
 
-  imuLogFile.println("timestamp_ms,ax,ay,az,gx,gy,gz");
+  imuLogFile.println("timestamp_ms,ax,ay,az,gx,gy,gz,mx,my,mz");
   imuLogFile.flush();
-  Serial.print("SD logging to: ");
-  Serial.println(filename);
   return true;
 }
 
 void runSelfCheck() {
-  Serial.println("===== SELF CHECK =====");
-  Serial.printf("Camera enabled at compile time: %s\n", ENABLE_CAMERA ? "YES" : "NO");
-  Serial.print("Wi-Fi: ");
-  Serial.println(WiFi.status() == WL_CONNECTED ? "OK" : "NG");
-  Serial.print("IMU: "); Serial.println(imuOk ? "OK" : "NG");
-  Serial.print("SD Card: "); Serial.println(sdOk ? "OK" : "NG");
-  Serial.print("Camera: "); Serial.println(camOk ? "OK" : "NG");
+  Serial.println("\n===== 🚀 KinetiCast 9軸統合システム SELF CHECK =====");
+  
+  int boardType = M5.getBoard();
+  Serial.printf("基板タイプ (Board Type)    : %d ", boardType);
+  if (boardType == 18) Serial.println("(M5AtomS3R として認識)");
+  else if (boardType == 145) Serial.println("(M5AtomS3RCam として自動認識成功)");
+  else Serial.println("(カスタム自動認識コード)");
+
+  Serial.printf("9軸IMU/地磁気 (M5Unified)  : %s\n", imuOk ? "🟢 OK (有効)" : "🔴 NG (初期化失敗)");
+  Serial.printf("SDカード保存用SPIバス      : %s\n", sdOk ? "🟢 OK (マウント完了)" : "🔴 NG (エラー)");
+  
+#if ENABLE_CAMERA
+  Serial.printf("OV3660 カメラユニット     : %s\n", camOk ? "🟢 OK (初期化完了)" : "🔴 NG (カメラエラー)");
   if (!camOk) {
-    Serial.printf("Camera error code: 0x%x\n", camErrCode);
+    Serial.printf("  ➔ カメラ初期化エラーコード: 0x%x\n", camErrCode);
   }
-  Serial.print("Flight state: ");
-  switch (flightState) {
-    case WAITING_LAUNCH: Serial.println("WAITING_LAUNCH"); break;
-    case POWERED: Serial.println("POWERED"); break;
-    case COASTING: Serial.println("COASTING"); break;
-    case APOGEE_DETECTED: Serial.println("APOGEE_DETECTED"); break;
+#endif
+
+  // タイミングによる「同期待機中」を避けるため、少し待ってリトライをかける
+  if (imuOk) {
+    for (int i = 0; i < 5; i++) {
+      M5.update();
+      if (M5.Imu.update()) {
+        auto imu_data = M5.Imu.getImuData();
+        Serial.printf("  ➔ [地磁気初期応答] Mag X:%6.2f, Y:%6.2f, Z:%6.2f uT\n", 
+                      imu_data.mag.x, imu_data.mag.y, imu_data.mag.z);
+        break;
+      }
+      delay(50);
+    }
   }
-  Serial.print("Current accel magnitude: ");
-  Serial.println(sqrtf(sharedAx*sharedAx + sharedAy*sharedAy + sharedAz*sharedAz), 3);
-  Serial.print("UDP packets sent: "); Serial.println(packetsSent);
-  Serial.print("Uptime: "); Serial.print(millis()/1000); Serial.println(" s");
-  Serial.print("Free heap: "); Serial.println(ESP.getFreeHeap());
-  Serial.println("=======================");
+  Serial.println("=====================================================\n");
 }
 
 void setup() {
-  Serial.begin(115200);
-  delay(3000);
-  Serial.println("Booting...");
+  auto cfg = M5.config();
+  cfg.serial_baudrate = 115200;
+  
+  // 不要な内部モジュールの自動初期化を完全遮断
+  cfg.internal_spk = false;
+  cfg.internal_mic = false;
+  cfg.external_rtc = false;
+  
+  M5.begin(cfg);
+  delay(500);
+  Serial.println("M5Unified core initialized.");
 
 #if ENABLE_CAMERA
   pinMode(CAM_POWER_ENABLE_PIN, OUTPUT);
@@ -309,47 +327,43 @@ void setup() {
   delay(500);
 #endif
 
-  Wire.begin(IMU_SDA_PIN, IMU_SCL_PIN);
-  int8_t imuInitResult = imu.beginI2C(BMI2_I2C_PRIM_ADDR, Wire);
-  // ...
+  // 最初はM5Unifiedの管理下でIMUを起動
+  M5.Imu.begin();
+  imuOk = M5.Imu.isEnabled();
 
+  // SDカード初期化
   sdOk = initSDCard();
 
-  // ---- Wi-Fiを先に確立させる ----
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(100); Serial.print("."); }
-  Serial.println(" connected!");
-  WiFi.setSleep(false);
-  udp.begin(UDP_PORT);
-
-  // ---- Wi-Fiが安定した後にカメラを初期化(PSRAM確保はこの後) ----
 #if ENABLE_CAMERA
-  camOk = initCamera();
-#else
-  camOk = false;
+  // 先にカメラを初期化（内部でI2C解放・再結合が行われます）
+  camOk = initCamera(); 
+  delay(200); // ➔ ドライバの衝突ログ抑制のための猶予
 #endif
 
-  xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 2, NULL, 1);
+  // 最後にWiFiを接続
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) { delay(100); }
+  
+  // ⭐️【エラー12対策】WiFi接続後、ESP32のネットワークが完全にルーティングを確立するまで2秒待つ
+  delay(2000); 
+  udp.begin(UDP_PORT);
+
+  // ネットワークが完全に準備できてから高頻度タスクを起動する
+// FreeRTOSマルチタスク割り当て (優先度を1に下げてネットワークに道を譲る)
+  xTaskCreatePinnedToCore(imuTask, "imu", 4096, NULL, 1, NULL, 1); 
 #if ENABLE_CAMERA
   xTaskCreatePinnedToCore(cameraTask, "camera", 8192, NULL, 1, NULL, 0);
 #endif
 
+  // 詳細セルフチェックの実行
   runSelfCheck();
-  Serial.println("Ready. Commands: check, flush");
 }
 
 void loop() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    if (cmd == "check") {
-      runSelfCheck();
-    } else if (cmd == "flush") {
-      imuLogFile.flush();
-      Serial.println("Flushed.");
-    } else if (cmd.length() > 0) {
-      Serial.println("Unknown command. Available: check, flush");
-    }
+    if (cmd == "check") runSelfCheck();
+    else if (cmd == "flush") { imuLogFile.flush(); Serial.println("Flushed."); }
   }
 }
