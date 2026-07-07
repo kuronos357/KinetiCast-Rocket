@@ -13,7 +13,7 @@ interface TelemetrySample {
   mx: number; my: number; mz: number;
   vx: number; vy: number; vz: number;
   px: number; py: number; pz: number;
-  heading: number; // 💡 Python側で計算・校正された高精度な方位を受け取る
+  heading: number; // 💡 Python側から届く融合済みの高精度絶対方位
 }
 
 interface ChartDataPoint {
@@ -34,7 +34,6 @@ export default function Viewer() {
   // 📡 二重リアルタイムデータ同期ストリーム
   // ------------------------------------------
   useEffect(() => {
-    // 1. 最も新しく作られた親セッション(sessions)を1件だけ常時監視
     const sessionQuery = query(
       collection(db, "sessions"),
       orderBy("createdAt", "desc"),
@@ -52,14 +51,12 @@ export default function Viewer() {
         setCurrentBatchId(sessionId);
         setImageUrl(sessionData.imageUrl || null);
 
-        // main.pyが新しく実行されてセッションIDが変わったら、古い子リスナーを解除してグラフをクリア
         if (unsubscribeChunks) {
           unsubscribeChunks();
           chartDataRef.current = [];
           setChartData([]);
         }
 
-        // 2. 確定した最新セッションの配下にある、子ドキュメント群(chunks)を時系列順に常時監視
         const chunksQuery = query(
           collection(db, "sessions", sessionId, "chunks"),
           orderBy("timestamp", "asc")
@@ -68,7 +65,6 @@ export default function Viewer() {
         unsubscribeChunks = onSnapshot(chunksQuery, (chunksSnapshot) => {
           const allSamples: TelemetrySample[] = [];
           
-          // すべての子チャンクから配列を取り出してフラットに結合
           chunksSnapshot.docs.forEach((chunkDoc) => {
             const chunkData = chunkDoc.data();
             if (chunkData.samples) {
@@ -85,7 +81,7 @@ export default function Viewer() {
               accelZ: s.az,
               velocityZ: s.vz,
               altitude: s.pz,
-              heading: s.heading, // Python側から来た校正済みデータをそのまま使う
+              heading: s.heading, // 🧭 生の磁気計算ではなく、Python側が補正したクリーンな値を利用
               px: s.px,
               py: s.py,
             }));
@@ -126,7 +122,7 @@ export default function Viewer() {
       const y2 = y1 * cosP - z * sinP; const z2 = y1 * sinP + z * cosP;
       const scale = (maxRadius / maxRange) * zoomFactor;
       
-      // 🛠️ 二重 return のタイポバグを修正 (正しくスケールを掛けた座標を返す)
+      // 🛠️ 変数マッピングのバグを完全に修正してスケールを適用
       return { x: cx + x1 * scale, y: cy - z2 * scale, depth: y2 };
     };
 
@@ -175,7 +171,6 @@ export default function Viewer() {
         });
         ctx.stroke();
 
-        // ロケット現在地ドット
         const last = data[data.length - 1];
         const lastPt = project3D(last.px, last.py, last.altitude, maxRange);
         ctx.fillStyle = "rgba(16, 185, 129, 0.3)"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 10, 0, Math.PI * 2); ctx.fill();
@@ -214,7 +209,6 @@ export default function Viewer() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-      
       {/* 左サイドバー */}
       <div className="lg:col-span-1 flex flex-col gap-4">
         <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
@@ -267,8 +261,6 @@ export default function Viewer() {
 
       {/* 右メインエリア */}
       <div className="lg:col-span-3 flex flex-col gap-6">
-        
-        {/* チャートエリア */}
         <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 shadow-lg flex flex-col gap-6">
           <div className="flex justify-between items-center border-b border-slate-800 pb-2">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Real-time Stream Analysis ({chartData.length} pts)</h2>
@@ -342,9 +334,7 @@ export default function Viewer() {
             </div>
           </div>
         </div>
-
       </div>
-
     </div>
   );
 }
