@@ -7,8 +7,26 @@ import * as THREE from 'three';
 import { db } from '@/lib/firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
+// テレメトリデータの型定義（anyの代わりにこれを使用）
+interface TelemetrySample {
+  t: number;
+  px?: number;
+  py?: number;
+  pz?: number;
+  qx?: number;
+  qy?: number;
+  qz?: number;
+  qw?: number;
+  vz?: number;
+  [key: string]: number | undefined; // その他の数値データ用
+}
+
+interface RocketModelProps {
+  currentSample: TelemetrySample | null;
+}
+
 // --- 3D空間内のロケット（円錐）を動かすコンポーネント ---
-function RocketModel({ currentSample }: { currentSample: any }) {
+function RocketModel({ currentSample }: RocketModelProps) {
   const meshRef = useRef<THREE.Mesh>(null);
 
   useFrame(() => {
@@ -21,7 +39,12 @@ function RocketModel({ currentSample }: { currentSample: any }) {
     meshRef.current.position.set(x, y, z);
 
     // クォータニオンによる姿勢（傾き）の反映
-    if (currentSample.qw !== undefined) {
+    if (
+      currentSample.qw !== undefined && 
+      currentSample.qx !== undefined && 
+      currentSample.qy !== undefined && 
+      currentSample.qz !== undefined
+    ) {
       const q = new THREE.Quaternion(
         currentSample.qx,
         currentSample.qz,  // センサーのZ ➔ Three.jsのY
@@ -34,21 +57,24 @@ function RocketModel({ currentSample }: { currentSample: any }) {
 
   return (
     <mesh ref={meshRef}>
-      {/* ひとまず上向きがわかりやすい円錐で代用 */}
       <coneGeometry args={[0.5, 3, 16]} />
       <meshNormalMaterial />
     </mesh>
   );
 }
 
+interface RocketTrajectoryViewerProps {
+  flightId: string;
+}
+
 // --- メインビュワー ---
-export default function RocketTrajectoryViewer({ flightId }: { flightId: string }) {
-  const [currentSample, setCurrentSample] = useState<any>(null);
+export default function RocketTrajectoryViewer({ flightId }: RocketTrajectoryViewerProps) {
+  const [currentSample, setCurrentSample] = useState<TelemetrySample | null>(null);
   const [trajectory, setTrajectory] = useState<[number, number, number][]>([[0, 0, 0]]);
   
-  const sampleQueueRef = useRef<any[]>([]);
+  const sampleQueueRef = useRef<TelemetrySample[]>([]);
   const trajectoryPointsRef = useRef<[number, number, number][]>([[0, 0, 0]]);
-  const animationIntervalRef = useRef<any>(null);
+  const animationIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!flightId) return;
@@ -61,8 +87,8 @@ export default function RocketTrajectoryViewer({ flightId }: { flightId: string 
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added' || change.type === 'modified') {
           const data = change.doc.data();
-          if (data && data.samples) {
-            sampleQueueRef.current.push(...data.samples);
+          if (data && Array.isArray(data.samples)) {
+            sampleQueueRef.current.push(...(data.samples as TelemetrySample[]));
           }
         }
       });
@@ -72,6 +98,8 @@ export default function RocketTrajectoryViewer({ flightId }: { flightId: string 
     animationIntervalRef.current = setInterval(() => {
       if (sampleQueueRef.current.length > 0) {
         const nextSample = sampleQueueRef.current.shift();
+        if (!nextSample) return;
+        
         setCurrentSample(nextSample);
 
         // 軌跡プロットの追加
