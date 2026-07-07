@@ -5,6 +5,7 @@
 #include <SD.h>
 #include "esp_camera.h"
 #include "secrets.h"
+#include <HTTPClient.h>
 
 #define ENABLE_CAMERA 1
 
@@ -35,6 +36,26 @@
 #define CAM_POWER_ENABLE_PIN 18
 
 const uint16_t UDP_PORT = 9870;
+const char* IMAGE_UPLOAD_URL = "http://" PC_IP ":5000/upload_image";
+
+bool sendImageOverWiFi(camera_fb_t* fb, const char* filename) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  http.begin(IMAGE_UPLOAD_URL);
+  http.addHeader("Content-Type", "image/jpeg");
+  http.addHeader("X-Filename", filename);  // ファイル名をヘッダで渡す(簡易的な方法)
+
+  uint32_t t0 = millis();
+  int httpCode = http.POST(fb->buf, fb->len);
+  uint32_t t1 = millis();
+
+  Serial.printf("[WIFI-IMG] POST result=%d, time=%lums, size=%uKB\n",
+                httpCode, t1 - t0, fb->len / 1024);
+
+  http.end();
+  return (httpCode == 200);
+}
 
 WiFiUDP udp;
 File imuLogFile;
@@ -240,11 +261,16 @@ void cameraTask(void* arg) {
           snprintf(filename, sizeof(filename), "/cam_%04d.jpg", fileIdx++);
         }
 
+        // SD保存(既存のまま、冗長性として残す)
         File imgFile = SD.open(filename, FILE_WRITE);
         if (imgFile) {
           imgFile.write(fb->buf, fb->len);
           imgFile.close();
         }
+
+        // ★Wi-Fi経由でPCにも送信
+        sendImageOverWiFi(fb, filename);
+
         esp_camera_fb_return(fb);
         lastCaptureAt = now;
       }
