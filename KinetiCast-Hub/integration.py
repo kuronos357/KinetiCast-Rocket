@@ -1,4 +1,4 @@
-# integration.py (全面書き換え)
+# integration.py (修正版)
 import math
 
 def quat_mult(q1, q2):
@@ -28,6 +28,31 @@ def rotate_vector(q, v):
     r = quat_mult(quat_mult(q, vq), quat_conjugate(q))
     return (r[1], r[2], r[3])
 
+def get_rotation_quat(v_from, v_to):
+    """v_fromベクトルをv_toベクトルへ回転させる最小回転のクォータニオンを計算"""
+    mag_from = math.sqrt(sum(x**2 for x in v_from))
+    mag_to = math.sqrt(sum(x**2 for x in v_to))
+    if mag_from == 0 or mag_to == 0:
+        return (1.0, 0.0, 0.0, 0.0)
+    
+    u = [x / mag_from for x in v_from]
+    v = [x / mag_to for x in v_to]
+    
+    dot = sum(ui*vi for ui, vi in zip(u, v))
+    if dot > 0.99999:
+        return (1.0, 0.0, 0.0, 0.0)
+    if dot < -0.99999:
+        # 真逆（180度）の場合は直交する任意の軸で反転
+        axis = (0.0, -u[2], u[1]) if abs(u[0]) < 0.8 else (-u[1], u[0], 0.0)
+        axis_mag = math.sqrt(sum(x**2 for x in axis))
+        return (0.0, axis[0]/axis_mag, axis[1]/axis_mag, axis[2]/axis_mag)
+        
+    w = (
+        u[1]*v[2] - u[2]*v[1],
+        u[2]*v[0] - u[0]*v[2],
+        u[0]*v[1] - u[1]*v[0]
+    )
+    return quat_normalize((1.0 + dot, w[0], w[1], w[2]))
 
 def calibrate_gravity(samples, num_samples=50):
     n = min(num_samples, len(samples))
@@ -36,31 +61,36 @@ def calibrate_gravity(samples, num_samples=50):
     gz = sum(s["az"] for s in samples[:n]) / n
     return (gx, gy, gz)
 
-
 def integrate_batch(samples, state):
     """
     state = {
-        "gravity_ref": (gx,gy,gz) or None,   # 起動時に測定した重力ベクトル(機体座標系)
+        "gravity_mag": float or None,         # 起動時に測定した重力の大きさ(G単位)
         "calib_buffer": list,
-        "quat": (w,x,y,z),                    # 起動時姿勢を基準とした相対回転
+        "quat": (w,x,y,z),                    # 世界座標系（Z軸が鉛直真上）に対する機体の姿勢
         "vx","vy","vz","px","py","pz": float,
         "last_t": float or None
     }
     """
-    if state["gravity_ref"] is None:
+    if "gravity_mag" not in state or state["gravity_mag"] is None:
         state["calib_buffer"].extend(samples)
         if len(state["calib_buffer"]) >= 50:
             g0 = calibrate_gravity(state["calib_buffer"], 50)
-            state["gravity_ref"] = g0
-            state["quat"] = (1.0, 0.0, 0.0, 0.0)  # 初期姿勢=基準(単位クォータニオン)
-            print(f"[CALIBRATION] gravity vector (body frame @ t0): {g0}")
+            g_mag = math.sqrt(g0[0]**2 + g0[1]**2 + g0[2]**2)
+            state["gravity_mag"] = g_mag
+            
+            # 【ここが重要】機体座標系の重力(g0)が、世界座標系の真下 (0, 0, -g_mag) に
+            # 一致するような初期姿勢クォータニオンを計算（これで世界座標のZ軸が鉛直真上になる）
+            state["quat"] = get_rotation_quat(g0, (0.0, 0.0, -g_mag))
+            
+            print(f"[CALIBRATION] Detected Gravity Mag: {g_mag:.4f} G")
+            print(f"[CALIBRATION] Initial Quat (World Align): {state['quat']}")
         else:
             for s in samples:
                 s["vx"] = s["vy"] = s["vz"] = 0.0
                 s["px"] = s["py"] = s["pz"] = 0.0
             return state
 
-    g0 = state["gravity_ref"]
+    g_mag = state["gravity_mag"]
     q = state["quat"]
     vx, vy, vz = state["vx"], state["vy"], state["vz"]
     px, py, pz = state["px"], state["py"], state["pz"]
@@ -72,29 +102,27 @@ def integrate_batch(samples, state):
         if dt <= 0:
             dt = 0.01
 
-        # ジャイロ(deg/s)をrad/sに変換
+        # 1. ジャイロ(deg/s)からクォータニオンの更新
         wx = math.radians(s["gx"])
         wy = math.radians(s["gy"])
         wz = math.radians(s["gz"])
 
-        # クォータニオンの微分方程式: dq/dt = 0.5 * q ⊗ [0, wx, wy, wz]
         omega_q = (0.0, wx, wy, wz)
         dq = quat_mult(q, omega_q)
         q = tuple(qi + 0.5 * dqi * dt for qi, dqi in zip(q, dq))
         q = quat_normalize(q)
 
-        # 起動時の重力ベクトルを、現在の姿勢(逆回転)で現在の機体座標系に投影
-        q_inv = quat_conjugate(q)
-        g_body = rotate_vector(q_inv, g0)
+        # 2. 【キモ】機体座標系の加速度を、現在の姿勢を使って世界座標系に変換
+        a_body = (s["ax"], s["ay"], s["az"])
+        a_world = rotate_vector(q, a_body)
 
-        ax_ms2 = (s["ax"] - g_body[0]) * 9.80665
-        ay_ms2 = (s["ay"] - g_body[1]) * 9.80665
-        az_ms2 = (s["az"] - g_body[2]) * 9.80665
+        # 3. 世界座標系（Z軸＝鉛直上向き）で重力加速度を除去
+        # 世界座標では重力は常に (0, 0, -g_mag) なので、Z軸に g_mag を足せば相殺される
+        ax_ms2 = a_world[0] * 9.80665
+        ay_ms2 = a_world[1] * 9.80665
+        az_ms2 = (a_world[2] + g_mag) * 9.80665  # -(-g_mag) なので足し算
 
-        if not is_stationary_debug_printed_once:
-            print(f"[DEBUG] raw accel after gravity removal: "
-                f"ax={ax_ms2:.4f} ay={ay_ms2:.4f} az={az_ms2:.4f} (should be ~0 if stationary)")
-
+        # 4. 世界座標系での2階積分
         vx += ax_ms2 * dt
         vy += ay_ms2 * dt
         vz += az_ms2 * dt
@@ -102,12 +130,12 @@ def integrate_batch(samples, state):
         py += vy * dt
         pz += vz * dt
 
+        # データを保存
         s["vx"], s["vy"], s["vz"] = vx, vy, vz
         s["px"], s["py"], s["pz"] = px, py, pz
-        s["qw"], s["qx"], s["qy"], s["qz"] = q  # 姿勢そのものも保存
+        s["qw"], s["qx"], s["qy"], s["qz"] = q
 
         t_prev = t
-
 
     state.update({
         "quat": q,
