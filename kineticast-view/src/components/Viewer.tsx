@@ -259,8 +259,51 @@ export default function Viewer() {
         </div>
       </div>
 
-      {/* 右メインエリア */}
+{/* 右メインエリア */}
       <div className="lg:col-span-3 flex flex-col gap-6">
+
+        {/* ---- 3D空間軌跡プロッター(順序を先頭に変更) ---- */}
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-4">
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+              <Move3d size={16} className="text-emerald-400 animate-pulse" />
+              Interactive 3D Spatial Trajectory Plotter
+            </h2>
+            <span className="text-[10px] text-slate-500 font-sans bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+              🖱️ Drag to Rotate / Wheel to Zoom
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-6">
+            {/* ---- キャンバスを拡大(420x320 → 700x520) ---- */}
+            <div className="bg-gray-950 p-1 rounded-lg border border-slate-800 shadow-inner cursor-grab active:cursor-grabbing select-none overflow-hidden mx-auto w-full flex justify-center">
+              <canvas ref={canvasRef} width={700} height={520} className="bg-gray-950 block max-w-full h-auto" />
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
+              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
+                <div className="text-[10px] text-slate-500 uppercase">Downrange X (E/W)</div>
+                <div className="text-lg font-bold text-slate-300 mt-1">{latestSample ? `${latestSample.px.toFixed(2)}` : "0.00"}m</div>
+              </div>
+              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
+                <div className="text-[10px] text-slate-500 uppercase">Downrange Y (N/S)</div>
+                <div className="text-lg font-bold text-slate-300 mt-1">{latestSample ? `${latestSample.py.toFixed(2)}` : "0.00"}m</div>
+              </div>
+              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
+                <div className="text-[10px] text-slate-500 uppercase">Altitude Z (pz)</div>
+                <div className="text-lg font-bold text-emerald-400 mt-1">{latestSample ? `${latestSample.pz.toFixed(2)}` : "0.00"}m</div>
+              </div>
+              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
+                <div className="text-[10px] text-slate-500 uppercase">3D Distance from Pad</div>
+                <div className="text-lg font-bold text-sky-400 mt-1">
+                  {latestSample ? Math.sqrt(latestSample.px * latestSample.px + latestSample.py * latestSample.py + latestSample.pz * latestSample.pz).toFixed(2) : "0.00"}m
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ---- グラフパネル(順序を後ろに変更) ---- */}
         <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 shadow-lg flex flex-col gap-6">
           <div className="flex justify-between items-center border-b border-slate-800 pb-2">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Real-time Stream Analysis ({chartData.length} pts)</h2>
@@ -295,45 +338,6 @@ export default function Viewer() {
           </div>
         </div>
 
-        {/* 3D空間軌跡プロッター */}
-        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-4">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-              <Move3d size={16} className="text-emerald-400 animate-pulse" />
-              Interactive 3D Spatial Trajectory Plotter
-            </h2>
-            <span className="text-[10px] text-slate-500 font-sans bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-              🖱️ Drag to Rotate / Wheel to Zoom
-            </span>
-          </div>
-          
-          <div className="flex flex-col md:flex-row gap-6 items-center">
-            <div className="bg-gray-950 p-1 rounded-lg border border-slate-800 shadow-inner cursor-grab active:cursor-grabbing select-none overflow-hidden">
-              <canvas ref={canvasRef} width={420} height={320} className="bg-gray-950 block max-w-full h-auto" />
-            </div>
-
-            <div className="flex-grow grid grid-cols-2 gap-3 w-full">
-              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
-                <div className="text-[10px] text-slate-500 uppercase">Downrange X (E/W)</div>
-                <div className="text-lg font-bold text-slate-300 mt-1">{latestSample ? `${latestSample.px.toFixed(2)}` : "0.00"}m</div>
-              </div>
-              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
-                <div className="text-[10px] text-slate-500 uppercase">Downrange Y (N/S)</div>
-                <div className="text-lg font-bold text-slate-300 mt-1">{latestSample ? `${latestSample.py.toFixed(2)}` : "0.00"}m</div>
-              </div>
-              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
-                <div className="text-[10px] text-slate-500 uppercase">Altitude Z (pz)</div>
-                <div className="text-lg font-bold text-emerald-400 mt-1">{latestSample ? `${latestSample.pz.toFixed(2)}` : "0.00"}m</div>
-              </div>
-              <div className="bg-slate-950/50 p-3 rounded-lg border border-slate-800 font-mono">
-                <div className="text-[10px] text-slate-500 uppercase">3D Distance from Pad</div>
-                <div className="text-lg font-bold text-sky-400 mt-1">
-                  {latestSample ? Math.sqrt(latestSample.px * latestSample.px + latestSample.py * latestSample.py + latestSample.pz * latestSample.pz).toFixed(2) : "0.00"}m
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
