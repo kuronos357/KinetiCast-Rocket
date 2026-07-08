@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { query, limit, onSnapshot, collection, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Gauge, Compass, Image as ImageIcon, Activity, Move3d } from "lucide-react";
+import { Gauge, Compass, Image as ImageIcon, Activity } from "lucide-react";
 import Image from "next/image";
 
 interface TelemetrySample {
@@ -122,7 +122,6 @@ export default function Viewer() {
       const y2 = y1 * cosP - z * sinP; const z2 = y1 * sinP + z * cosP;
       const scale = (maxRadius / maxRange) * zoomFactor;
       
-      // 🛠️ 変数マッピングのバグを完全に修正してスケールを適用
       return { x: cx + x1 * scale, y: cy - z2 * scale, depth: y2 };
     };
 
@@ -162,9 +161,9 @@ export default function Viewer() {
         ctx.fillStyle = "#64748b"; ctx.fillText(`Alt:${(maxRange * ratio).toFixed(0)}m`, hPt.x + 6, hPt.y + 3);
       });
 
-      // 🔴 3D 軌跡ライン（アイコンの放物線とカラーマッチング）
+      // 🔴 3D 軌跡ライン
       if (data.length > 0) {
-        ctx.strokeStyle = "#ff2222"; ctx.lineWidth = 2.5; ctx.beginPath(); // 軌跡を赤色に変更
+        ctx.strokeStyle = "#ff2222"; ctx.lineWidth = 2.5; ctx.beginPath();
         data.forEach((p, idx) => {
           const pt = project3D(p.px, p.py, p.altitude, maxRange);
           if (idx === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y);
@@ -173,8 +172,8 @@ export default function Viewer() {
 
         const last = data[data.length - 1];
         const lastPt = project3D(last.px, last.py, last.altitude, maxRange);
-        ctx.fillStyle = "rgba(255, 34, 34, 0.3)"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 10, 0, Math.PI * 2); ctx.fill(); // 先端の波紋を赤に変更
-        ctx.fillStyle = "#ff5555"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 4, 0, Math.PI * 2); ctx.fill(); // 先端のロケット現在地を明るい赤に変更
+        ctx.fillStyle = "rgba(255, 34, 34, 0.3)"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#ff5555"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 4, 0, Math.PI * 2); ctx.fill();
       }
     };
 
@@ -266,7 +265,7 @@ export default function Viewer() {
         <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-4">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-              <Move3d size={16} className="text-emerald-400 animate-pulse" />
+              <RocketIcon className="w-5 h-5 animate-pulse" />
               Interactive 3D Spatial Trajectory Plotter
             </h2>
             <span className="text-[10px] text-slate-500 font-sans bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
@@ -339,5 +338,34 @@ export default function Viewer() {
 
       </div>
     </div>
+  );
+}
+
+// 🌐 プロッターの左上で明滅させるためのインラインSVGコンポーネント (React用に属性名を完全にキャメルケースに修正)
+function RocketIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className={className}>
+      <g transform="translate(40, 40)">
+        <line x1="0" y1="80"  x2="432" y2="296" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="140" x2="432" y2="356" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="200" x2="432" y2="416" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="260" x2="432" y2="476" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="180" x2="432" y2="-36" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="240" x2="432" y2="24"  stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="300" x2="432" y2="84"  stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="360" x2="432" y2="144" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+        <line x1="0" y1="420" x2="432" y2="204" stroke="#00ff66" strokeWidth="6" opacity="0.4" />
+
+        <line x1="160" y1="60" x2="160" y2="380" stroke="#00ff66" strokeWidth="36" strokeLinecap="round" />
+        <line x1="160" y1="220" x2="340" y2="310" stroke="#00ff66" strokeWidth="36" strokeLinecap="round" />
+
+        <path d="M 160,220 Q 230,120 360,60" fill="none" stroke="#ff2222" strokeWidth="32" strokeLinecap="round" />
+        <path d="M 160,220 Q 230,120 360,60" fill="none" stroke="#ff5555" strokeWidth="12" strokeLinecap="round" />
+
+        <g transform="translate(360, 60) rotate(65)">
+          <path d="M 0,-40 L 28,28 L 0,14 L -28,28 Z" fill="#ffffff" stroke="#111111" strokeWidth="6" strokeLinejoin="round" />
+        </g>
+      </g>
+    </svg>
   );
 }
