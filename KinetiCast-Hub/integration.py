@@ -74,6 +74,7 @@ ZUPT_GYRO_THRESHOLD = 3.0    # deg/s単位
 # 🧭 地磁気相補フィルターゲイン（ジャイロのYawドリフトを引き戻す強度。0.02 = 毎ステップ誤差の2%を強制補正）
 MAG_FEEDBACK_GAIN = 0.02
 
+
 def integrate_batch(samples, state, mag_offset_x=130.0, mag_offset_y=-350.0):
     """
     9軸（重力キャリブレーション + ジャイロ積分 + 地磁気コンパスロック）を用いた航法計算
@@ -85,8 +86,8 @@ def integrate_batch(samples, state, mag_offset_x=130.0, mag_offset_y=-350.0):
             g_mag = math.sqrt(g0[0]**2 + g0[1]**2 + g0[2]**2)
             state["gravity_mag"] = g_mag
             
-            # 初期重力から垂直クォータニオンを生成
-            state["quat"] = get_rotation_quat(g0, (0.0, 0.0, -g_mag))
+            # 💡【修正1】初期の静止重力ベクトル（＝上向きの比力1G）を、世界座標系の「垂直上向き（+g_mag）」にマッピングします
+            state["quat"] = get_rotation_quat(g0, (0.0, 0.0, g_mag))
 
             # 🧭 初期方位(Yaw)を地磁気の絶対方位に合わせ込む
             init_s = state["calib_buffer"][0]
@@ -127,23 +128,18 @@ def integrate_batch(samples, state, mag_offset_x=130.0, mag_offset_y=-350.0):
         q = tuple(qi + 0.5 * dqi * dt for qi, dqi in zip(q, dq))
         q = quat_normalize(q)
 
-        # 🧭 2. 地磁気コンパスによる Yaw ドリフトの絶対補正 (アプローチBの核心コア)
-        # 地磁気から絶対方位を計算
+        # 🧭 2. 地磁気コンパスによる Yaw ドリフトの絶対補正
         mag_heading = calculate_mag_heading(s["mx"], s["my"], mag_offset_x, mag_offset_y)
-        
-        # 現在のクォータニオンから推定されている現在のYaw(方位)角を逆算
         qw, qx, qy, qz = q
         current_yaw_rad = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
         current_yaw_deg = math.degrees(current_yaw_rad)
         if current_yaw_deg < 0:
             current_yaw_deg += 360.0
 
-        # 方位誤差の算出 (-180〜+180度の範囲にクリップして最短ルートで補正)
         heading_error = mag_heading - current_yaw_deg
         if heading_error > 180.0: heading_error -= 360.0
         elif heading_error < -180.0: heading_error += 360.0
 
-        # 世界座標系の垂直Z軸まわりの補正クォータニオンを生成し、左乗算してブレをロック
         correction_angle = math.radians(heading_error) * MAG_FEEDBACK_GAIN
         q_corr = (math.cos(correction_angle / 2.0), 0.0, 0.0, math.sin(correction_angle / 2.0))
         q = quat_normalize(quat_mult(q_corr, q))
@@ -152,10 +148,10 @@ def integrate_batch(samples, state, mag_offset_x=130.0, mag_offset_y=-350.0):
         a_body = (s["ax"], s["ay"], s["az"])
         a_world = rotate_vector(q, a_body)
 
-        # 4. 世界座標系で重力を除去
+        # 💡【修正2】世界座標系（上向きがプラス）において、地球の重力による影響（1G分）を引き算します
         ax_ms2 = a_world[0] * 9.80665
         ay_ms2 = a_world[1] * 9.80665
-        az_ms2 = (a_world[2] + g_mag) * 9.80665
+        az_ms2 = (a_world[2] - g_mag) * 9.80665  # 👈 「+」から「-」へ修正
 
         # 5. 速度・位置の積分
         vx += ax_ms2 * dt
@@ -177,11 +173,11 @@ def integrate_batch(samples, state, mag_offset_x=130.0, mag_offset_y=-350.0):
         py += vy * dt
         pz += vz * dt
 
-        # Viewer.tsx へ流すフラットデータに航法計算結果をマージ
+        # 各サンプルデータに航法計算結果をマージ
         s["vx"], s["vy"], s["vz"] = vx, vy, vz
         s["px"], s["py"], s["pz"] = px, py, pz
         s["qw"], s["qx"], s["qy"], s["qz"] = q
-        s["heading"] = current_yaw_deg # 補正が効いた極めてクリーンな絶対方位
+        s["heading"] = current_yaw_deg
         s["zupt"] = is_stationary
 
         t_prev = t

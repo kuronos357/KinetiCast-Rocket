@@ -19,12 +19,12 @@ export default function Home() {
         </div>
 
         {/* 右側：リンクとステータスインジケーターをまとめたエリア */}
-        <div className="flex flex-col items-end gap-2 self-start md:self-auto">
-          {/* 🔗 右上に配置した made by ソーシャルリンク（インラインSVG仕様） */}
-          <div className="flex items-center gap-3 text-xs text-slate-500 font-mono mb-1 bg-slate-900/30 px-3 py-1 rounded-lg border border-slate-900">
-            <span className="text-[10px] text-slate-600">made by</span>
+        <div className="flex flex-col items-end gap-2 self-start md:self-auto w-full md:w-auto">
+          {/* 🔗 右上に配置した made by ソーシャルリンク（指定URLを反映） */}
+          <div className="flex items-center gap-3 text-xs text-slate-500 font-mono mb-1 bg-slate-900/30 px-3 py-1 rounded-lg border border-slate-900/50">
+            <span className="text-[10px] text-slate-600 font-sans">made by 奥平和哲</span>
             <a 
-              href="https://github.com" 
+              href="https://github.com/kuronos357" 
               target="_blank" 
               rel="noopener noreferrer" 
               className="flex items-center gap-1 hover:text-slate-300 transition-colors"
@@ -34,7 +34,7 @@ export default function Home() {
             </a>
             <span className="text-slate-800">/</span>
             <a 
-              href="https://x.com" 
+              href="https://x.com/Im_kairos01" 
               target="_blank" 
               rel="noopener noreferrer" 
               className="flex items-center gap-1 hover:text-sky-400 transition-colors"
@@ -44,19 +44,36 @@ export default function Home() {
             </a>
           </div>
 
-          {/* ステータスインジケーター */}
-          <div className="flex items-center gap-4 bg-slate-900/60 px-4 py-2 rounded-xl border border-slate-800/80 backdrop-blur-sm w-full md:w-auto justify-between md:justify-start">
-            <div className="flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="text-xs font-mono text-slate-400">GND_STATION_OK</span>
+          {/* ステータスインジケーター ＆ LIVE URL */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-4 bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800/80 backdrop-blur-sm w-full md:w-auto">
+            <div className="flex items-center justify-between sm:justify-start gap-4 flex-grow">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-xs font-mono text-slate-400">GND_STATION_OK</span>
+              </div>
+              <div className="h-4 w-px bg-slate-800 hidden sm:block"></div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-slate-500">UPLINK:</span>
+                <span className="text-xs font-mono text-emerald-400 font-bold">5.8GHz</span>
+              </div>
             </div>
-            <div className="h-4 w-px bg-slate-800 hidden md:block"></div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-slate-500">UPLINK:</span>
-              <span className="text-xs font-mono text-emerald-400 font-bold">5.8GHz / 115200bps</span>
+
+            <div className="h-px sm:h-4 w-full sm:w-px bg-slate-800/80"></div>
+
+            {/* 🌐 追加された自身の本番サイトURLリンク */}
+            <div className="flex items-center gap-1.5 text-xs font-mono text-slate-500">
+              <span className="text-[10px] text-slate-600 font-sans">LIVE:</span>
+              <a 
+                href="https://kineti-cast-rocket.vercel.app/" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="text-sky-500/90 hover:text-sky-400 transition-colors underline underline-offset-4 decoration-sky-500/30 hover:decoration-sky-400/60"
+              >
+                kineti-cast-rocket.vercel.app
+              </a>
             </div>
           </div>
         </div>

@@ -2,6 +2,8 @@ import socket
 import struct
 import time
 import datetime
+import os
+import sys  # 💡 画面上書き用の制御に必要
 import firebase_admin
 from firebase_admin import credentials, firestore
 import integration  # 💡 新しくなった航法モジュールをインポート
@@ -64,8 +66,12 @@ def main():
         "imageUrl": None
     })
 
+    # ループ突入前に一度コンソール画面を完全にクリアする
+    os.system('cls' if os.name == 'nt' else 'clear')
+
     batch_samples = []
     chunk_index = 0
+    packet_count = 0  # 💡 画面更新のタイミングを間引くためのカウンター
 
     while True:
         try:
@@ -85,6 +91,33 @@ def main():
             }
             batch_samples.append(sample_node)
             
+            # --------------------------------------------------
+            # 🖥️ リアルタイム・コンソールダッシュボード表示 (5パケットごとに上書き)
+            # --------------------------------------------------
+            packet_count += 1
+            if packet_count % 5 == 0:
+                # "\033[H" でコンソールのカーソルを一番左上にワープさせます (スクロールしない)
+                sys.stdout.write("\033[H")
+                sys.stdout.write(f"==================================================\n")
+                sys.stdout.write(f"🚀 KINETICAST TELEMETRY STREAMING | Session: {session_id}\n")
+                sys.stdout.write(f"==================================================\n")
+                sys.stdout.write(f" ⏱️ BOARD TIME : {t_ms:<10} ms\n")
+                sys.stdout.write(f" 📡 UDP PACKETS: {packet_count:<10} pkts\n")
+                sys.stdout.write(f"--------------------------------------------------\n")
+                sys.stdout.write(f" 🔹 RAW SENSOR VALUES (Latest)\n")
+                sys.stdout.write(f"  ACCEL (G) : X={ax:+7.3f}, Y={ay:+7.3f}, Z={az:+7.3f}\n")
+                sys.stdout.write(f"  GYRO (d/s): X={gx:+7.3f}, Y={gy:+7.3f}, Z={gz:+7.3f}\n")
+                sys.stdout.write(f"  MAG (uT)  : X={mx:+7.3f}, Y={my:+7.3f}, Z={mz:+7.3f}\n")
+                sys.stdout.write(f"--------------------------------------------------\n")
+                sys.stdout.write(f" 🛰️ NAVIGATION REALTIME STATE (Calculated)\n")
+                sys.stdout.write(f"  POSITION(m): X={nav_state['px']:+8.2f}, Y={nav_state['py']:+8.2f}, Z={nav_state['pz']:+8.2f}\n")
+                sys.stdout.write(f"  VELOCITY(m): X={nav_state['vx']:+8.2f}, Y={nav_state['vy']:+8.2f}, Z={nav_state['vz']:+8.2f}\n")
+                sys.stdout.write(f"--------------------------------------------------\n")
+                sys.stdout.write(f" 🔥 FIRESTORE STATUS\n")
+                sys.stdout.write(f"  Chunks Pushed: {chunk_index:<5} | ZUPT Loops: {nav_state.get('_zupt_count_debug', 0):<5}\n")
+                sys.stdout.write(f"==================================================\n")
+                sys.stdout.flush()
+
             # 100サンプル（約1秒分）貯まったら一括航法処理を実行して子コレクションへ送信
             if len(batch_samples) >= BATCH_SIZE_LIMIT:
                 # 🚀 integration.py を駆動。batch_samplesの中身が参照渡しで直接、位置・速度・地磁気方位で上書きされます
@@ -98,8 +131,6 @@ def main():
                     "timestamp": firestore.SERVER_TIMESTAMP,
                     "samples": batch_samples
                 })
-                
-                print(f"🚀 [Firestore] Pushed {chunk_id} to {session_id} (ZUPT: {nav_state.get('_zupt_count_debug', 0)} loops)")
                 
                 chunk_index += 1
                 batch_samples = []
