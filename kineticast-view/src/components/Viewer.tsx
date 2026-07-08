@@ -162,9 +162,9 @@ export default function Viewer() {
         ctx.fillStyle = "#64748b"; ctx.fillText(`Alt:${(maxRange * ratio).toFixed(0)}m`, hPt.x + 6, hPt.y + 3);
       });
 
-      // 3D 軌跡ライン
+      // 🔴 3D 軌跡ライン（アイコンの放物線とカラーマッチング）
       if (data.length > 0) {
-        ctx.strokeStyle = "#10b981"; ctx.lineWidth = 2.5; ctx.beginPath();
+        ctx.strokeStyle = "#ff2222"; ctx.lineWidth = 2.5; ctx.beginPath(); // 軌跡を赤色に変更
         data.forEach((p, idx) => {
           const pt = project3D(p.px, p.py, p.altitude, maxRange);
           if (idx === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y);
@@ -173,8 +173,8 @@ export default function Viewer() {
 
         const last = data[data.length - 1];
         const lastPt = project3D(last.px, last.py, last.altitude, maxRange);
-        ctx.fillStyle = "rgba(16, 185, 129, 0.3)"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 10, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#34d399"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(255, 34, 34, 0.3)"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 10, 0, Math.PI * 2); ctx.fill(); // 先端の波紋を赤に変更
+        ctx.fillStyle = "#ff5555"; ctx.beginPath(); ctx.arc(lastPt.x, lastPt.y, 4, 0, Math.PI * 2); ctx.fill(); // 先端のロケット現在地を明るい赤に変更
       }
     };
 
@@ -259,10 +259,10 @@ export default function Viewer() {
         </div>
       </div>
 
-{/* 右メインエリア */}
+      {/* 右メインエリア */}
       <div className="lg:col-span-3 flex flex-col gap-6">
 
-        {/* ---- 3D空間軌跡プロッター(順序を先頭に変更) ---- */}
+        {/* ---- 3D空間軌跡プロッター ---- */}
         <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-4">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
@@ -275,7 +275,6 @@ export default function Viewer() {
           </div>
 
           <div className="flex flex-col gap-6">
-            {/* ---- キャンバスを拡大(420x320 → 700x520) ---- */}
             <div className="bg-gray-950 p-1 rounded-lg border border-slate-800 shadow-inner cursor-grab active:cursor-grabbing select-none overflow-hidden mx-auto w-full flex justify-center">
               <canvas ref={canvasRef} width={700} height={520} className="bg-gray-950 block max-w-full h-auto" />
             </div>
@@ -303,7 +302,7 @@ export default function Viewer() {
           </div>
         </div>
 
-        {/* ---- グラフパネル(順序を後ろに変更) ---- */}
+        {/* ---- グラフパネル ---- */}
         <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 shadow-lg flex flex-col gap-6">
           <div className="flex justify-between items-center border-b border-slate-800 pb-2">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Real-time Stream Analysis ({chartData.length} pts)</h2>
