@@ -10,14 +10,14 @@
 #define SD_SPI_MOSI_PIN 6
 #define SD_SPI_CS_PIN   5
 
-// ---- データ構造体 (28バイトの超軽量パケット) ----
+// ---- データ構造体 (28バイトの軽量パケット) ----
 struct __attribute__((packed)) ImuDataPacket {
   uint32_t timestamp;
   float ax, ay, az;
   float gx, gy, gz;
 };
 
-// ブロードキャストアドレス (地上の受信機はどれでも受信可能)
+// ブロードキャストアドレス
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // グローバル変数
@@ -48,14 +48,31 @@ void setup() {
   delay(1000);
   Serial.println("\n--- KinetiCast INS Logger Start ---");
 
-  // 1. IMU初期化とフルスケールレンジ設定 (±16G / ±2000dps)
+  // ==========================================
+  // 1. IMU初期化とI2Cバス奪還によるレンジ設定
+  // ==========================================
   M5.Imu.begin();
   imuOk = M5.Imu.isEnabled();
+  
   if(imuOk) {
-    // センサーの頭打ち(クリッピング)を防ぐ最大レンジ設定
-    M5.Imu.setACCEL_FS(M5.Imu.X_AXIS, 3); // 3 = ±16G
-    M5.Imu.setGYRO_FS(M5.Imu.X_AXIS, 3);  // 3 = ±2000dps
-    Serial.println("🟢 IMU Range set to ±16G / ±2000dps");
+    // ⭐️ 前回大成功した「I2C管理権の奪還」ハックを適用！
+    M5.In_I2C.release();
+    delay(10);
+
+    // I2C経由でBMI270（アドレス0x68）のレジスタへ直接レンジ設定を書き込む
+    // [加速度レジスタ ACC_CONF(0x40)] 
+    // [ジャイロレジスタ GYR_CONF(0x42)] 
+    // ※M5Unified内部の書き換えロジックを直接I2C通信で再現します
+    uint8_t acc_conf_data[2] = {0x40, 0xAC}; // ODR=100Hz, BWP=Normal, Range=±16G
+    uint8_t gyr_conf_data[2] = {0x42, 0xAC}; // ODR=100Hz, BWP=Normal, Range=±2000dps
+    
+    M5.In_I2C.writeRegister(0x68, 0x40, acc_conf_data + 1, 1, 400000);
+    M5.In_I2C.writeRegister(0x68, 0x42, gyr_conf_data + 1, 1, 400000);
+    delay(10);
+
+    // ⭐️ 管理権をM5Unifiedに返還
+    M5.In_I2C.begin();
+    Serial.println("🟢 IMU Range forced to ±16G / ±2000dps via I2C Hack!");
   } else {
     Serial.println("🔴 IMU Init Failed!");
   }

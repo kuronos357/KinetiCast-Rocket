@@ -4,7 +4,7 @@ import integration
 
 # SDカードから回収したCSVファイルを読み込む (ファイル名は適宜合わせてください)
 # テスト用に、手でM5Atomを上に持ち上げて下ろした時のログを指定します
-df = pd.read_csv(r"I:\flight_log_3.csv")
+df = pd.read_csv(r"I:\flight_log_4.csv")
 
 # 航法状態の初期化
 nav_state = {
