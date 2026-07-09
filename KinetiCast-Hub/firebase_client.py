@@ -1,40 +1,43 @@
 import time
+import base64
 import firebase_admin
 from firebase_admin import credentials, firestore
-from config import FIREBASE_KEY_PATH
 
 _db = None
 
-def init_firebase():
+def init_firebase(key_path):
     global _db
-    cred = credentials.Certificate(FIREBASE_KEY_PATH)
-    firebase_admin.initialize_app(cred)
-    _db = firestore.client()
-    return _db
+    try:
+        cred = credentials.Certificate(key_path)
+        firebase_admin.initialize_app(cred)
+        _db = firestore.client()
+        print("🟢 Firebase Admin SDK Initialized Successfully.")
+        return _db
+    except Exception as e:
+        print(f"❌ Firebase Init Failed: {e}")
+        return None
 
-def create_flight():
-    flight_id = str(int(time.time()))
-    doc_ref = _db.collection("flights").document(flight_id)
+def create_session():
+    if not _db: return None
+    session_id = f"launch_session_{int(time.time())}"
+    doc_ref = _db.collection("sessions").document(session_id)
     doc_ref.set({
-        "created_at": firestore.SERVER_TIMESTAMP,
-        "status": "in_progress"
+        "createdAt": firestore.SERVER_TIMESTAMP,
+        "imageUrl": None,
+        "status": "LIVE"
     })
-    return flight_id
+    print(f"🚀 New Active Rocket Session Created: {session_id}")
+    return session_id
 
-def upload_batch(flight_id, batch_index, t_start, t_end, samples):
-    batch_ref = (
-        _db.collection("flights")
-           .document(flight_id)
-           .collection("telemetry")
-           .document(f"batch_{batch_index:04d}")
-    )
-    batch_ref.set({
-        "t_start": t_start,
-        "t_end": t_end,
-        "samples": samples
-    })
-
-def mark_flight_completed(flight_id):
-    _db.collection("flights").document(flight_id).update({
-        "status": "completed"
-    })
+def update_live_image(session_id, jpeg_bytes):
+    if not _db or not session_id: return
+    try:
+        base64_encoded = base64.b64encode(jpeg_bytes).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{base64_encoded}"
+        doc_ref = _db.collection("sessions").document(session_id)
+        doc_ref.update({
+            "imageUrl": data_url,
+            "updatedAt": firestore.SERVER_TIMESTAMP
+        })
+    except Exception as e:
+        print(f"⚠️ Firebase Update Failed: {e}")
