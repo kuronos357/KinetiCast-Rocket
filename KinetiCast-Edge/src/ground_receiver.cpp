@@ -1,7 +1,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp_now.h>
-#include <esp_wifi.h> // 💡 チャンネル設定の内部APIを使うために追加
+#include <esp_wifi.h>
 
 #define CHUNK_SIZE 230
 #pragma pack(push, 1)
@@ -14,35 +14,35 @@ struct Packet {
 };
 #pragma pack(pop)
 
-// 画像格納用バッファ（400KBあればUXGAでも余裕）
-#define MAX_IMG_SIZE (400 * 1024)
+#define MAX_IMG_SIZE (200 * 1024)
 uint8_t* imgBuffer = nullptr;
 
 uint16_t currentImageId = 0xFFFF;
 uint16_t chunksReceived = 0;
 uint32_t maxOffsetDetected = 0;
 
-// PCへシリアルデータを送信する関数
+uint32_t totalImagesSaved = 0;
+uint32_t totalPacketsRecv = 0;
+
 void sendToPC(uint32_t dataLen) {
   if (dataLen == 0) return;
-  // マーカー"IMG:"(4文字) + データサイズ(4バイト) + JPEG中身
   Serial.write("IMG:");
   Serial.write((uint8_t*)&dataLen, 4);
   Serial.write(imgBuffer, dataLen);
   Serial.flush();
 }
 
-// ESP-NOW 受信コールバック関数
-void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
+void OnDataRecv(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
   if (len < 7 || imgBuffer == nullptr) return;
 
   Packet pkt;
   memcpy(&pkt, incomingData, len);
+  totalPacketsRecv++;
 
-  // 新しい画像IDが飛んできたら、前の画像を（不完全でも）PCに吐き出してリセット
   if (pkt.image_id != currentImageId) {
     if (currentImageId != 0xFFFF && chunksReceived > 0) {
       sendToPC(maxOffsetDetected);
+      totalImagesSaved++;
     }
     currentImageId = pkt.image_id;
     chunksReceived = 0;
@@ -59,10 +59,10 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
       maxOffsetDetected = endPoint;
     }
 
-    // すべてのパケットが揃ったら即座にPCへ送信
     if (chunksReceived >= pkt.total_chunks) {
       sendToPC(maxOffsetDetected);
-      currentImageId = 0xFFFF; // 次のフレーム待ちにするため初期化
+      totalImagesSaved++;
+      currentImageId = 0xFFFF; 
       chunksReceived = 0;
     }
   }
@@ -70,36 +70,68 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 
 void setup() {
   auto cfg = M5.config();
+  cfg.serial_baudrate = 115200;
+  // 電力を食うスピーカーやマイク、不要なRTCは完全に物理OFFにして省電力化
+  cfg.internal_spk = false;
+  cfg.internal_mic = false;
+  cfg.external_rtc = false;
   M5.begin(cfg);
+  
+  delay(1500);
 
-  // 400KBの大きなバッファを確保（S3世代なら内蔵RAMで余裕）
+  // 液晶ディスプレイの王道初期化
+  M5.Display.begin();
+  M5.Display.setBrightness(80);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(GREEN, BLACK);
+  M5.Display.clear(BLACK);
+  
+  Serial.println("\n--- 📡 ZERObase Ground Station Start ---");
+
   imgBuffer = (uint8_t*)malloc(MAX_IMG_SIZE);
   if (imgBuffer == nullptr) {
-    Serial.println("❌ Failed to allocate image buffer!");
+    Serial.println("❌ BUFFER MALLOC FAILED");
+    M5.Display.println("❌ MALLOC FAILED");
     while(1) delay(10);
   }
 
-  // Wi-FiをSTAモードで初期化
+  // Wi-Fiを安全な手順でチャンネル1に初期化
   WiFi.mode(WIFI_STA);
+  WiFi.begin();
+  delay(50);
   WiFi.disconnect();
 
-  // 💡 【修正】ESP32用の正しい関数でチャンネルを「1」に固定
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
 
-  // ESP-NOW 初期化
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ Error initializing ESP-NOW");
-    return;
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(OnDataRecv);
+    Serial.println("🟢 ESP-NOW RECEIVER: READY");
+  } else {
+    Serial.println("❌ ESP-NOW RECEIVER: FAILED");
+    M5.Display.println("❌ ESP-NOW FAILED");
   }
-
-  // 受信コールバックを登録
-  esp_now_register_recv_cb(OnDataRecv);
-
-  Serial.println("🟢 Ground Receiver Ready. Listening on Channel 1...");
 }
 
 void loop() {
-  vTaskDelay(100);
+  // 画面の部分書き換え（最速で状態を画面に反映）
+  M5.Display.startWrite();
+  M5.Display.setCursor(10, 20);
+  M5.Display.printf("=== ZERO-BASE GROUND ===");
+  
+  M5.Display.setCursor(10, 60);
+  M5.Display.printf("Img Recv : %d frames  ", totalImagesSaved); 
+  
+  M5.Display.setCursor(10, 100);
+  M5.Display.printf("Active ID: #%d       ", currentImageId == 0xFFFF ? 0 : currentImageId);
+  
+  M5.Display.setCursor(10, 140);
+  M5.Display.printf("Pkt Total: %d pcs    ", totalPacketsRecv);
+  
+  M5.Display.setCursor(10, 180);
+  M5.Display.printf("Station  : ALIVE     ");
+  M5.Display.endWrite();
+
+  vTaskDelay(pdMS_TO_TICKS(100)); // 0.1秒周期で画面を高速追従
 }

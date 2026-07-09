@@ -37,9 +37,6 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint16_t globalImageId = 0;
 bool camOk = false;
 
-// コア間で画像ポインタを受け渡すためのFreeRTOSキュー
-QueueHandle_t cameraQueue = NULL;
-
 bool initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -53,115 +50,84 @@ bool initCamera() {
   config.pin_sccb_sda = CAM_PIN_SIOD; config.pin_sccb_scl = CAM_PIN_SIOC;
   config.pin_pwdn = CAM_PIN_PWDN; config.pin_reset = CAM_PIN_RESET;
   
-  // 💡 AtomS3Rはクロックを20MHzで安定駆動できます
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 10000000; // 10MHzで安定重視
   config.pixel_format = PIXFORMAT_JPEG;
-  
-  // 💡ロケット用途の解像度設定
-  // 確実に毎秒の枚数を稼ぎたい場合は FRAMESIZE_SVGA (800x600) もしくは FRAMESIZE_VGA (640x480) が超おすすめ
-  config.frame_size = FRAMESIZE_SVGA; 
-  config.jpeg_quality = 12; // 10〜15あたりが画質と軽さのバランスが良いです
-  
-  // 💡並列パイプライン処理のため、バッファは2コマ分確保
-  config.fb_count = 2; 
-  config.fb_location = CAMERA_FB_IN_PSRAM; // AtomS3Rの高速な拡張RAMを活用
-  config.grab_mode = CAMERA_GRAB_LATEST;   // 常に最新のコマを掴む
+  config.frame_size = FRAMESIZE_VGA; 
+  config.jpeg_quality = 15; // 圧縮率を少し上げて転送負荷を軽減
+  config.fb_count = 1; 
+  config.fb_location = CAMERA_FB_IN_PSRAM; 
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;   
   config.sccb_i2c_port = 1;
 
   return (esp_camera_init(&config) == ESP_OK);
 }
 
-// =========================================================================
-// 【Core 0】 ESP-NOW送信タスク (Wi-Fi/通信担当)
-// =========================================================================
-void sendTask(void* arg) {
-  Packet pkt;
-  camera_fb_t* fb = nullptr;
-
-  while (true) {
-    // Core 1(撮影)から画像ポインタが回ってくるのを待つ
-    if (xQueueReceive(cameraQueue, &fb, portMAX_DELAY) == pdTRUE) {
-      if (fb) {
-        uint16_t total_chunks = (fb->len + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        globalImageId++;
-
-        for (uint16_t i = 0; i < total_chunks; i++) {
-          pkt.image_id = globalImageId;
-          pkt.total_chunks = total_chunks;
-          pkt.chunk_idx = i;
-          
-          uint32_t offset = i * CHUNK_SIZE;
-          uint32_t remaining = fb->len - offset;
-          pkt.data_len = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
-          
-          memcpy(pkt.payload, fb->buf + offset, pkt.data_len);
-
-          // Wi-FiコアであるCore 0自身から直接叩くので高効率
-          esp_now_send(broadcastAddress, (uint8_t *)&pkt, 7 + pkt.data_len);
-          
-          // ESP32-S3の内部バッファ溢れを防ぐわずかなウェイト
-          delayMicroseconds(300); 
-        }
-        // 送信が終わったらカメラドライバにバッファを返却
-        esp_camera_fb_return(fb);
-      }
-    }
-  }
-}
-
-// =========================================================================
-// 【Core 1】 カメラ撮影タスク (メイン制御担当)
-// =========================================================================
-void captureTask(void* arg) {
-  while (true) {
-    if (!camOk) { vTaskDelay(10); continue; }
-
-    // カメラからフレームを取得
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (fb) {
-      // 送信タスク(Core 0)へポインタを渡す
-      // タイムアウトを0にすることで、もし通信側がまだ送信中で詰まっていたら
-      // このコマをその場で破棄して、リアルタイム性を最優先（最新フレームを維持）します
-      if (xQueueSend(cameraQueue, &fb, 0) != pdTRUE) {
-        esp_camera_fb_return(fb);
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(5)); // ループの僅かなウェイト
-  }
-}
-
 void setup() {
   auto cfg = M5.config();
+  cfg.serial_baudrate = 115200;
   M5.begin(cfg);
-  
-  // カメラ初期化
-  camOk = initCamera();
+  delay(1500); // シリアル接続待ちを長めに確保
 
-  // ESP-NOW 初期化
+  Serial.println("\n--- 🚀 ZERObase Rocket Cam Start ---");
+  
+  camOk = initCamera();
+  if (camOk) {
+    Serial.println("🟢 CAM INIT: SUCCESS");
+  } else {
+    Serial.println("❌ CAM INIT: FAILED");
+  }
+
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
   if (esp_now_init() == ESP_OK) {
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastAddress, 6);
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
-  }
-
-  if (camOk) {
-    // 最新フレームを1個だけホールドするキューを作成
-    cameraQueue = xQueueCreate(1, sizeof(camera_fb_t*));
-
-    // タスクを別々のコアにピン留めして起動
-    xTaskCreatePinnedToCore(sendTask, "sendTask", 4096, NULL, 1, NULL, 0);       // Core 0
-    xTaskCreatePinnedToCore(captureTask, "captureTask", 4096, NULL, 1, NULL, 1); // Core 1
-    
-    Serial.println("🚀 AtomS3R-M12 Dual-core logic started.");
+    Serial.println("🟢 ESP-NOW INIT: SUCCESS");
   } else {
-    Serial.println("❌ Camera init failed.");
+    Serial.println("❌ ESP-NOW INIT: FAILED");
   }
 }
 
 void loop() {
-  // メインループ（Core 1）はフリーです。
-  vTaskDelay(1000);
+  if (!camOk) {
+    Serial.println("⚠️ Camera not available.");
+    delay(1000);
+    return;
+  }
+
+  // 1フレーム取得
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("❌ Failed to capture frame");
+    delay(100);
+    return;
+  }
+
+  uint16_t total_chunks = (fb->len + CHUNK_SIZE - 1) / CHUNK_SIZE;
+  globalImageId++;
+
+  // シリアルにデバッグ出力
+  Serial.printf("[TX] Img #%d | Size: %d bytes | Chunks: %d\n", globalImageId, fb->len, total_chunks);
+
+  // パケット分割送信
+  Packet pkt;
+  for (uint16_t i = 0; i < total_chunks; i++) {
+    pkt.image_id = globalImageId;
+    pkt.total_chunks = total_chunks;
+    pkt.chunk_idx = i;
+    
+    uint32_t offset = i * CHUNK_SIZE;
+    uint32_t remaining = fb->len - offset;
+    pkt.data_len = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+    
+    memcpy(pkt.payload, fb->buf + offset, pkt.data_len);
+    esp_now_send(broadcastAddress, (uint8_t *)&pkt, 7 + pkt.data_len);
+    delayMicroseconds(500); // 連続送信による取りこぼし防止のディレイ
+  }
+
+  esp_camera_fb_return(fb);
+  delay(50); // 次のフレーム撮影までの適度なインターバル
 }
