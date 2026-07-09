@@ -92,7 +92,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 
 void setup() {
   auto cfg = M5.config();
-  cfg.serial_baudrate = 115200;
+  cfg.serial_baudrate = 1500000;
   cfg.internal_spk = false;
   cfg.internal_mic = false;
   cfg.external_rtc = false;

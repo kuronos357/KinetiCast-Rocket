@@ -130,7 +130,9 @@ void sendTask(void* arg) {
         esp_camera_fb_return(fb);
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(250)); // 約4fps
+    // vTaskDelay(pdMS_TO_TICKS(250)); // 変更前: 約4fps
+    vTaskDelay(pdMS_TO_TICKS(100));    // 変更後: 約10fps（おすすめ）
+    // vTaskDelay(pdMS_TO_TICKS(50));  // 変更後: 約20fps（限界チャレンジ）
   }
 }
 
@@ -152,7 +154,7 @@ void captureTask(void* arg) {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(1500000);
   delay(3000); 
   Serial.println("Booting Rocket Cam...");
 
@@ -176,6 +178,26 @@ void setup() {
   camOk = initCamera();
   if(camOk) {
     Serial.println("🟢 Camera Hardware Init: SUCCESS");
+    // =======================================================
+    // 🚀 【追加】シャッタースピード（露出）の爆速化設定
+    // =======================================================
+    sensor_t * s = esp_camera_sensor_get();
+    if (s != nullptr) {
+      // 1. 自動露出(AEC)をオフにして「マニュアル露出」に切り替え
+      s->set_exposure_ctrl(s, 0); 
+      
+      // 2. シャッタースピード(露出時間)の指定
+      // 値が小さいほどシャッターが速い（ブレないが暗くなる）。最大1200程度。
+      // ※ 晴天の屋外なら 100〜300 くらいが目安。室内だと真っ暗になります。
+      s->set_aec_value(s, 200); 
+
+      // // 3. （オプション）もし暗すぎる場合はISO感度（ゲイン）を固定で上げる
+      // s->set_gain_ctrl(s, 0); // 自動ゲイン(AGC)をオフ
+      // s->set_agc_gain(s, 15); // ゲイン値（0〜30程度）。上げすぎるとノイズが増えます
+      
+      Serial.println("⚙️ Camera Shutter Speed set to MANUAL (Fast)");
+    }
+    // =======================================================
   } else {
     Serial.println("❌ Camera Hardware Init: FAILED");
   }
