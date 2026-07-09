@@ -1,137 +1,155 @@
 import os
-import time
 import struct
+import sys
+import time
+import cv2
+import numpy as np
 import serial
-import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from serial.tools import list_ports
 
-# ==========================================
-# 1. Firebase Admin SDK の初期化 (既存の設定を維持)
-# ==========================================
-CRED_PATH = "0_Project\\KinetiCast-Rocket\\KinetiCast-Hub\\secrets\\kineticast-firebase-adminsdk.json"
-BUCKET_NAME = "あなたのプロジェクトID.firebasestorage.app"  # 💡お使いのバケット名に書き換えてください
+# =========================================================
+# ⚙️ 設定
+# =========================================================
+BAUDRATE = 115200
+SAVE_DIR = "captured_images"
 
-try:
-    cred = credentials.Certificate(CRED_PATH)
-    firebase_admin.initialize_app(cred, {
-        'storageBucket': BUCKET_NAME
-    })
-    db = firestore.client()
-    bucket = storage.bucket()
-    print("🟢 Firebase Admin SDK (Storage & Firestore) initialized.")
-except Exception as e:
-    print(f"🔴 Firebase initialization failed: {e}")
-    exit(1)
+# 保存用ディレクトリの作成
+if not os.path.exists(SAVE_DIR):
+    os.makedirs(SAVE_DIR)
 
-# ==========================================
-# 2. シリアル通信設定 (環境に合わせて調整)
-# ==========================================
-# 💡 S3をPCに接続した際のCOMポート名に書き換えてください（例: 'COM3', '/dev/ttyACM0' など）
-SERIAL_PORT = 'COM3' 
-BAUD_RATE = 115200 
+def select_com_port():
+    """PCに接続されているCOMポートを自動検出し、M5Stackっぽいものを最優先で自動選択する"""
+    ports = list(list_ports.comports())
+    if not ports:
+        print("❌ エラー: 利用可能なCOMポートが見つかりません。")
+        sys.exit(1)
 
-# フレームの連番用カウンター
-frame_index = 0
+    print("\n--- 🔍 利用可能なシリアルポート一覧 ---")
+    m5_ports = []
+    for i, p in enumerate(ports):
+        is_m5 = "USB シリアル" in p.description or "m5stack" in p.description.lower() or "ch340" in p.description.lower() or "cp210x" in p.description.lower()
+        marker = "⭐ [本命候補]" if is_m5 else ""
+        print(f" [{i}] {p.device} - {p.description} {marker}")
+        if is_m5:
+            m5_ports.append(p.device)
 
-def process_image(image_data):
-    global frame_index
-    try:
-        # ------------------------------------------
-        # 🔍 A. 現在アクティブ（RUNNING）なセッションを検索
-        # ------------------------------------------
-        sessions_ref = db.collection("sessions")
-        active_sessions = (
-            sessions_ref.where("status", "==", "RUNNING")
-            .limit(1)
-            .get()
-        )
+    if m5_ports:
+        chosen_port = m5_ports[0]
+        print(f"\n💡 M5Stack候補を自動検出したため、【{chosen_port}】 を選択しました。")
+        return chosen_port
 
-        if not active_sessions:
-            print("⚠️ [Warning] No RUNNING session found. Skipping Firebase sync.")
-            return
+    if len(ports) == 1:
+        print(f"💡 1つのポートのみ検出されたため、{ports[0].device} を自動選択しました。")
+        return ports[0].device
 
-        session_doc = active_sessions[0]
-        session_id = session_doc.id
-
-        # ------------------------------------------
-        # 📤 B. Firebase Storage へアップロード
-        # ------------------------------------------
-        blob_path = f"sessions/{session_id}/frames/frame_{frame_index:05d}.jpg"
-        blob = bucket.blob(blob_path)
-        
-        # バイトデータを直接Storageに転送
-        blob.upload_from_string(image_data, content_type='image/jpeg')
-        
-        # 公開ダウンロードURLを発行
-        blob.make_public()
-        public_url = blob.public_url
-
-        # ------------------------------------------
-        # 📡 C. Firestore の親ドキュメントの URL を更新
-        # ------------------------------------------
-        sessions_ref.document(session_id).update({
-            "imageUrl": public_url,
-            "lastImageUpdatedAt": firestore.SERVER_TIMESTAMP
-        })
-
-        print(f"🚀 [Firebase Sync] Session: {session_id} -> Synced Frame {frame_index:05d} ({len(image_data)//1024} KB)")
-        print(f"🔗 URL: {public_url}")
-
-        frame_index += 1
-
-    except Exception as e:
-        print(f"🔴 [Error] Failed to process/upload image: {e}")
+    print(f"\n⚠️ 自動判別できなかったため、リストの最初にある 【{ports[0].device}】 で自動起動します。")
+    return ports[0].device
 
 def main():
-    print(f"🔌 Connecting to M5Stack S3 on {SERIAL_PORT}...")
-    try:
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    except Exception as e:
-        print(f"🔴 Failed to open serial port {SERIAL_PORT}: {e}")
-        print("💡 接続されているCOMポート番号が正しいか確認してください。")
-        return
+    com_port = select_com_port()
 
-    print("🟢 Serial connection established. Waiting for rocket camera data via ESP-NOW...")
-    
-    buffer = b""
-    
-    while True:
-        try:
-            # シリアルバッファからデータを一括読み込み
-            if ser.in_waiting > 0:
-                buffer += ser.read(ser.in_waiting)
-            else:
-                time.sleep(0.001) # CPU負荷下げ
-                continue
+    print(f"\n📡 {com_port} をボーレート {BAUDRATE} でオープンします...")
+    try:
+        ser = serial.Serial(
+            com_port,
+            BAUDRATE,
+            timeout=1,
+            dsrdtr=True,
+            rtscts=False,
+            xonxoff=False,
+        )
+        ser.set_buffer_size(rx_size=1024 * 1024, tx_size=1024)
+    except Exception as e:
+        print(f"❌ ポートのオープンに失敗しました: {e}")
+        sys.exit(1)
+
+    print("🟢 サーバー起動完了。ロケットからの画像待機中...")
+    print("   ※ 終了するには画像ウィンドウを選択した状態で 'q' キーを押してください。\n")
+
+    cv2.namedWindow("🚀 Rocket Live View", cv2.WINDOW_NORMAL)
+    img_count = 0
+
+    try:
+        while True:
+            # 1. 1バイトずつ確実にスキャンして "IMG:" マーカーを探す（文字化け回避）
+            sync_buffer = b""
+            while True:
+                char = ser.read(1)
+                if not char:
+                    break
+                sync_buffer += char
+                if len(sync_buffer) > 4:
+                    sync_buffer = sync_buffer[1:]
+                if sync_buffer == b"IMG:":
+                    break
             
-            # マーカー "IMG:" を探してパース
-            while b"IMG:" in buffer:
-                idx = buffer.index(b"IMG:")
-                buffer = buffer[idx:] # マーカーより前のゴミデータをカット
-                
-                if len(buffer) < 8:
-                    break # サイズ情報(4バイト)が溜まるまで次の受信を待つ
-                
-                # 4バイトのデータサイズ(Little Endian)を取得
-                img_size = struct.unpack("<I", buffer[4:8])[0]
-                
-                if len(buffer) < 8 + img_size:
-                    break # 画像本体がすべて溜まるまで次の受信を待つ
-                
-                # 画像バイナリを切り出し
-                img_data = buffer[8:8+img_size]
-                buffer = buffer[8+img_size:] # 読み終わった分をバッファから削除
-                
-                # Firebase処理へ引き渡し
-                process_image(img_data)
-                
-        except KeyboardInterrupt:
-            print("\n👋 Server shutting down...")
-            ser.close()
-            break
-        except Exception as e:
-            print(f"⚠️ Loop Error: {e}")
-            time.sleep(1)
+            if sync_buffer != b"IMG:":
+                continue # タイムアウト等で抜けた場合は最初からやり直し
+
+            # 2. 画像サイズ(4バイト)を取得
+            size_bytes = ser.read(4)
+            if len(size_bytes) < 4:
+                continue
+
+            (img_size,) = struct.unpack("<I", size_bytes)
+
+            if img_size == 0 or img_size > 5 * 1024 * 1024:
+                continue
+
+            # コンソールへの経過表示（不要ならこのprintも消してOKです）
+            print(f"📥 受信中... サイズ: {img_size:,} bytes", end="", flush=True)
+
+            # 3. 指定サイズ分のバイナリデータを取得
+            img_data = b""
+            start_time = time.time()
+            while len(img_data) < img_size:
+                if time.time() - start_time > 3.0:
+                    break
+                chunk = ser.read(min(img_size - len(img_data), 4096))
+                if not chunk:
+                    break
+                img_data += chunk
+
+            if len(img_data) < img_size:
+                print(" -> ❌ タイムアウト")
+                continue
+
+            print(" -> 🟢 完了！")
+
+            # 4. デコードと表示
+            nparr = np.frombuffer(img_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                continue
+
+            img_count += 1
+            filename = os.path.join(
+                SAVE_DIR, f"rocket_{img_count:05d}_{int(time.time())}.jpg"
+            )
+            cv2.imwrite(filename, img)
+
+            cv2.putText(
+                img,
+                f"REC: {img_count}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+            )
+            cv2.imshow("🚀 Rocket Live View", img)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("ユーザー要求により終了します。")
+                break
+
+    except KeyboardInterrupt:
+        print("\nサーバーを停止します。")
+    finally:
+        ser.close()
+        cv2.destroyAllWindows()
+        print("🔌 終了しました。")
 
 if __name__ == "__main__":
     main()
