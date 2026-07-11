@@ -1,0 +1,8 @@
+{
+  "BAUDRATE": 2000000,
+  "SAVE_DIR": "captured_images",
+  "FIREBASE": {
+    "USE_FIREBASE": true,
+    "KEY_PATH": "secrets/kineticast-firebase-adminsdk.json",
+  }
+}

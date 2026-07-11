@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 #include "esp_camera.h"
 
 // ==== 🚀 AtomS3R 完全ピン配置 ====
@@ -73,9 +74,9 @@ bool initCamera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   
-  // 初期設定 (待機中は標準解像度)
-  config.frame_size   = FRAMESIZE_HVGA; // 480x320
-  config.jpeg_quality = 8;
+  // 初期設定 (待機中・地上テスト用。まずは確実に通る軽量設定から)
+  config.frame_size   = FRAMESIZE_QVGA; // 320x240
+  config.jpeg_quality = 20;             // 数値大=高圧縮/低画質。まずは確実性優先
   config.fb_count     = 2;
   config.grab_mode    = CAMERA_GRAB_LATEST;
 
@@ -95,27 +96,42 @@ void flightPhaseTask(void *pvParameters) {
     // Z軸（進行方向）の加速度が2Gを超えたら発射と判定
     if (currentPhase == LAUNCH_WAIT && az > 2.0f) {
       currentPhase = ASCENDING;
-      if (s) s->set_framesize(s, FRAMESIZE_HVGA); // HVGA (480x320)
+      if (s) {
+        s->set_framesize(s, FRAMESIZE_QQVGA); // 160x120。高速フェーズはFPS優先で解像度を大きく落とす
+        s->set_quality(s, 15);
+      }
       sendIntervalMs = 66; // 15Hz (激しい動きを克明に)
-      Serial.println("🚀 LAUNCH DETECTED! Mode: ASCENDING (HVGA @ 15Hz)");
+      Serial.println("🚀 LAUNCH DETECTED! Mode: ASCENDING (QQVGA @ 15Hz target)");
     } 
     // 上昇が終わりZ軸が0G（無重力・自由落下）付近になったら下降と判定
     else if (currentPhase == ASCENDING && az < 0.5f) {
       currentPhase = DESCENDING;
-      if (s) s->set_framesize(s, FRAMESIZE_SVGA); // SVGA (800x600) 高画質
+      if (s) {
+        s->set_framesize(s, FRAMESIZE_QVGA); // 320x240。降下はゆっくりなので解像度を少し戻す
+        s->set_quality(s, 15);
+      }
       sendIntervalMs = 200; // 5Hz (ゆっくり降下しながら空撮)
-      Serial.println("🪂 APOGEE DETECTED! Mode: DESCENDING (SVGA @ 5Hz)");
+      Serial.println("🪂 APOGEE DETECTED! Mode: DESCENDING (QVGA @ 5Hz target)");
     }
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
 void captureTask(void *pvParameters) {
+  static uint32_t droppedFrames = 0;
   while (true) {
     if (!camOk) { vTaskDelay(1000); continue; }
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb) {
-      xQueueOverwrite(cameraQueue, &fb);
+      if (xQueueSend(cameraQueue, &fb, 0) != pdTRUE) {
+        // sendTaskが追いついておらずキューが満杯 = このfbは諦めて即返却
+        // (以前はxQueueOverwriteで黙って上書き→未returnのままリークしていた)
+        esp_camera_fb_return(fb);
+        droppedFrames++;
+        if (droppedFrames % 50 == 0) {
+          Serial.printf("Dropped frames so far: %lu\n", droppedFrames);
+        }
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -170,6 +186,7 @@ void setup() {
   }
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // ground_receiver.cpp側と明示的に一致させる
   if (esp_now_init() == ESP_OK) {
     espNowOk = true;
     esp_now_peer_info_t peerInfo;
@@ -180,7 +197,7 @@ void setup() {
     esp_now_add_peer(&peerInfo);
   }
 
-  cameraQueue = xQueueCreate(1, sizeof(camera_fb_t*));
+  cameraQueue = xQueueCreate(2, sizeof(camera_fb_t*)); // fb_count=2に合わせる
   
   xTaskCreatePinnedToCore(flightPhaseTask, "flightPhaseTask", 4096, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(captureTask, "captureTask", 4096, nullptr, 2, nullptr, 1);
