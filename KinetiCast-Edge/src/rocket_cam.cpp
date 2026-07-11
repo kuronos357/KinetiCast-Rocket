@@ -42,10 +42,10 @@ bool camOk = false;
 QueueHandle_t cameraQueue;
 uint16_t imageIdCounter = 0;
 
-// 💡 状態管理と可変送信インターバル
-enum FlightPhase { LAUNCH_WAIT, ASCENDING, DESCENDING };
-FlightPhase currentPhase = LAUNCH_WAIT;
-int sendIntervalMs = 100; // 初期値10Hz
+// 💡 IMUは今回のカメラ単機能ブランチではスコープ外。
+//    フェーズ判定による動的な解像度切り替えは行わず、固定インターバルで送信する。
+//    (以前のflightPhaseTaskはM5.Imu経由でI2Cバスを触っており、カメラのSCCBと衝突する原因になっていた)
+int sendIntervalMs = 150; // 固定送信間隔。まずはここから実測して調整する
 
 bool initCamera() {
   pinMode(CAM_POWER_ENABLE_PIN, OUTPUT);
@@ -84,39 +84,6 @@ bool initCamera() {
   return (err == ESP_OK);
 }
 
-// 💡 フライトフェーズ監視タスク
-void flightPhaseTask(void *pvParameters) {
-  while(true) {
-    M5.Imu.update();
-    float ax, ay, az;
-    M5.Imu.getAccel(&ax, &ay, &az);
-
-    sensor_t * s = esp_camera_sensor_get();
-    
-    // Z軸（進行方向）の加速度が2Gを超えたら発射と判定
-    if (currentPhase == LAUNCH_WAIT && az > 2.0f) {
-      currentPhase = ASCENDING;
-      if (s) {
-        s->set_framesize(s, FRAMESIZE_QQVGA); // 160x120。高速フェーズはFPS優先で解像度を大きく落とす
-        s->set_quality(s, 15);
-      }
-      sendIntervalMs = 66; // 15Hz (激しい動きを克明に)
-      Serial.println("🚀 LAUNCH DETECTED! Mode: ASCENDING (QQVGA @ 15Hz target)");
-    } 
-    // 上昇が終わりZ軸が0G（無重力・自由落下）付近になったら下降と判定
-    else if (currentPhase == ASCENDING && az < 0.5f) {
-      currentPhase = DESCENDING;
-      if (s) {
-        s->set_framesize(s, FRAMESIZE_QVGA); // 320x240。降下はゆっくりなので解像度を少し戻す
-        s->set_quality(s, 15);
-      }
-      sendIntervalMs = 200; // 5Hz (ゆっくり降下しながら空撮)
-      Serial.println("🪂 APOGEE DETECTED! Mode: DESCENDING (QVGA @ 5Hz target)");
-    }
-    vTaskDelay(pdMS_TO_TICKS(50));
-  }
-}
-
 void captureTask(void *pvParameters) {
   static uint32_t droppedFrames = 0;
   while (true) {
@@ -138,11 +105,13 @@ void captureTask(void *pvParameters) {
 }
 
 void sendTask(void *pvParameters) {
+  uint32_t framesSent = 0;
   while (true) {
     camera_fb_t *fb = nullptr;
     if (xQueueReceive(cameraQueue, &fb, portMAX_DELAY)) {
       if (espNowOk) {
         uint16_t totalChunks = (fb->len + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        uint16_t sendFailCount = 0;
         for (uint16_t i = 0; i < totalChunks; i++) {
           Packet pkt;
           pkt.image_id = imageIdCounter;
@@ -152,20 +121,29 @@ void sendTask(void *pvParameters) {
           uint16_t currentChunkSize = (fb->len - offset > CHUNK_SIZE) ? CHUNK_SIZE : (fb->len - offset);
           pkt.data_len = currentChunkSize;
           memcpy(pkt.payload, fb->buf + offset, currentChunkSize);
-          esp_now_send(broadcastAddress, (uint8_t *)&pkt, sizeof(Packet));
+          esp_err_t sendResult = esp_now_send(broadcastAddress, (uint8_t *)&pkt, sizeof(Packet));
+          if (sendResult != ESP_OK) sendFailCount++;
           delayMicroseconds(500); 
         }
+        framesSent++;
+        if (framesSent <= 5 || framesSent % 20 == 0) {
+          Serial.printf("frame#%lu sent: %d chunks (%u bytes), send_fail=%d\n",
+            framesSent, totalChunks, fb->len, sendFailCount);
+        }
         imageIdCounter++;
+      } else if (framesSent == 0) {
+        Serial.println("WARN: frame captured but espNowOk=false, not sending");
       }
       esp_camera_fb_return(fb);
     }
-    vTaskDelay(pdMS_TO_TICKS(sendIntervalMs)); // 動的インターバル
+    vTaskDelay(pdMS_TO_TICKS(sendIntervalMs)); // 固定インターバル
   }
 }
 
 void setup() {
   auto cfg = M5.config();
   cfg.serial_baudrate = 2000000;
+  cfg.internal_imu = false; // 重要: IMU自動初期化がカメラのSCCB(I2C)と衝突するため無効化
   M5.begin(cfg);
   
   M5.Display.begin();
@@ -183,6 +161,9 @@ void setup() {
       s->set_exposure_ctrl(s, 0); // AECオフ（マニュアルシャッター）
       s->set_aec_value(s, 300);   // 屋外用の高速シャッター（暗ければ上げる）
     }
+    Serial.println("Camera init OK");
+  } else {
+    Serial.println("FATAL: Camera init failed. captureTask will spin idle forever.");
   }
 
   WiFi.mode(WIFI_STA);
@@ -194,12 +175,16 @@ void setup() {
     memcpy(peerInfo.peer_addr, broadcastAddress, 6);
     peerInfo.channel = 0;  
     peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo);
+    esp_err_t peerResult = esp_now_add_peer(&peerInfo);
+    Serial.printf("ESP-NOW init OK. add_peer result=%d\n", (int)peerResult);
+  } else {
+    Serial.println("FATAL: esp_now_init failed. espNowOk=false, sendTask will not transmit.");
   }
+  Serial.printf("WiFi STA MAC: %s\n", WiFi.macAddress().c_str());
+  Serial.printf("camOk=%d espNowOk=%d\n", camOk, espNowOk);
 
   cameraQueue = xQueueCreate(2, sizeof(camera_fb_t*)); // fb_count=2に合わせる
   
-  xTaskCreatePinnedToCore(flightPhaseTask, "flightPhaseTask", 4096, nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(captureTask, "captureTask", 4096, nullptr, 2, nullptr, 1);
   xTaskCreatePinnedToCore(sendTask, "sendTask", 4096, nullptr, 1, nullptr, 1);
 }
